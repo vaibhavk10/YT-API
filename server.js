@@ -471,7 +471,7 @@ app.get('/', (req, res) => {
     creator: API_NAME,
     message: 'YouTube Download API',
     endpoints: {
-      audio: '/api/downloader/ytmp3?url=YOUTUBE_URL',
+      audio: '/api/downloader/ytmp3?url=https://youtu.be/LZY0-ccz2-w?si=_hGGb5SmMwLL8UHbL',
       video: '/api/downloader/ytmp4?url=YOUTUBE_URL',
       health: '/health'
     }
@@ -484,7 +484,7 @@ const server = app.listen(PORT, () => {
   console.log(`📡 Base URL: ${BASE_URL}`);
   console.log(`📁 Downloads directory: ${DOWNLOAD_DIR}`);
   console.log(`\nEndpoints:`);
-  console.log(`  Audio: GET ${BASE_URL}/api/downloader/ytmp3?url=YOUTUBE_URL`);
+  console.log(`  Audio: GET ${BASE_URL}/api/downloader/ytmp3?url=https://youtu.be/LZY0-ccz2-w?si=_hGGb5SmMwLL8UHb`);
   console.log(`  Video: GET ${BASE_URL}/api/downloader/ytmp4?url=YOUTUBE_URL`);
   console.log(`  Health: GET ${BASE_URL}/health\n`);
 });
