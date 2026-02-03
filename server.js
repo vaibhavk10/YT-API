@@ -88,7 +88,8 @@ async function getVideoInfo(url) {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
-      skipDownload: true, // Don't download, just get info
+      skipDownload: true,
+      noCheckFormats: true, // Don't check format availability
       addHeader: [
         'referer:youtube.com',
         'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -104,6 +105,34 @@ async function getVideoInfo(url) {
     }
 
     const info = await ytdlp(url, options);
+    
+    // If info is null or empty, try without format checking
+    if (!info || !info.title) {
+      // Retry with minimal options
+      const minimalOptions = {
+        dumpSingleJson: true,
+        noWarnings: true,
+        noPlaylist: true,
+        skipDownload: true,
+        noCheckFormats: true
+      };
+      
+      if (fs.existsSync(COOKIES_PATH)) {
+        const cookiesStats = fs.statSync(COOKIES_PATH);
+        if (cookiesStats.size > 0) {
+          minimalOptions.cookies = COOKIES_PATH;
+        }
+      }
+      
+      const retryInfo = await ytdlp(url, minimalOptions);
+      return {
+        title: retryInfo.title || 'YouTube Video',
+        duration: retryInfo.duration || 0,
+        thumbnail: retryInfo.thumbnail || null,
+        description: retryInfo.description || ''
+      };
+    }
+    
     return {
       title: info.title || 'YouTube Video',
       duration: info.duration || 0,
@@ -112,6 +141,38 @@ async function getVideoInfo(url) {
     };
   } catch (error) {
     console.error('Error getting video info:', error);
+    
+    // Check for format-related errors and try without format checking
+    if (error.message && error.message.includes('Requested format is not available')) {
+      try {
+        console.log('Retrying without format checks...');
+        const retryOptions = {
+          dumpSingleJson: true,
+          noWarnings: true,
+          noPlaylist: true,
+          skipDownload: true,
+          noCheckFormats: true
+        };
+        
+        if (fs.existsSync(COOKIES_PATH)) {
+          const cookiesStats = fs.statSync(COOKIES_PATH);
+          if (cookiesStats.size > 0) {
+            retryOptions.cookies = COOKIES_PATH;
+          }
+        }
+        
+        const retryInfo = await ytdlp(url, retryOptions);
+        return {
+          title: retryInfo.title || 'YouTube Video',
+          duration: retryInfo.duration || 0,
+          thumbnail: retryInfo.thumbnail || null,
+          description: retryInfo.description || ''
+        };
+      } catch (retryError) {
+        console.error('Retry also failed:', retryError);
+        throw new Error(`Failed to get video info: ${retryError.message}`);
+      }
+    }
     
     // Check for specific cookie-related errors
     if (error.message && (error.message.includes('Sign in to confirm') || error.message.includes('authentication'))) {
