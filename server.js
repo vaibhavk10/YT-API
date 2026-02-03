@@ -11,6 +11,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const ytdlp = require('yt-dlp-exec');
+const yts = require('yt-search');
 
 const execAsync = promisify(exec);
 const app = express();
@@ -80,16 +81,41 @@ function cleanupOldFiles() {
 setInterval(cleanupOldFiles, 2 * 60 * 1000);
 
 /**
- * Get video info using yt-dlp
+ * Get video info using yt-search (primary) with yt-dlp fallback
+ * yt-search is more reliable and doesn't have format checking issues
  */
 async function getVideoInfo(url) {
+  // Extract video ID from URL
+  const videoIdMatch = url.match(/(?:youtu\.be\/|v=)([a-zA-Z0-9_-]{11})/);
+  if (!videoIdMatch) {
+    throw new Error('Invalid YouTube URL');
+  }
+  const videoId = videoIdMatch[1];
+
+  // PRIMARY: Use yt-search (no format issues, more reliable)
+  try {
+    const search = await yts({ videoId });
+    
+    if (search && search.videos && search.videos.length > 0) {
+      const video = search.videos[0];
+      return {
+        title: video.title || 'YouTube Video',
+        duration: video.duration ? video.duration.seconds : 0,
+        thumbnail: video.thumbnail || null,
+        description: video.description || ''
+      };
+    }
+  } catch (ytsError) {
+    console.log('yt-search failed, trying yt-dlp fallback...', ytsError.message);
+  }
+
+  // FALLBACK: Use yt-dlp if yt-search fails (should rarely happen)
   try {
     const options = {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
       skipDownload: true,
-      noCheckFormats: true, // Don't check format availability
       addHeader: [
         'referer:youtube.com',
         'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -106,33 +132,6 @@ async function getVideoInfo(url) {
 
     const info = await ytdlp(url, options);
     
-    // If info is null or empty, try without format checking
-    if (!info || !info.title) {
-      // Retry with minimal options
-      const minimalOptions = {
-        dumpSingleJson: true,
-        noWarnings: true,
-        noPlaylist: true,
-        skipDownload: true,
-        noCheckFormats: true
-      };
-      
-      if (fs.existsSync(COOKIES_PATH)) {
-        const cookiesStats = fs.statSync(COOKIES_PATH);
-        if (cookiesStats.size > 0) {
-          minimalOptions.cookies = COOKIES_PATH;
-        }
-      }
-      
-      const retryInfo = await ytdlp(url, minimalOptions);
-      return {
-        title: retryInfo.title || 'YouTube Video',
-        duration: retryInfo.duration || 0,
-        thumbnail: retryInfo.thumbnail || null,
-        description: retryInfo.description || ''
-      };
-    }
-    
     return {
       title: info.title || 'YouTube Video',
       duration: info.duration || 0,
@@ -140,37 +139,26 @@ async function getVideoInfo(url) {
       description: info.description || ''
     };
   } catch (error) {
-    console.error('Error getting video info:', error);
+    console.error('Error getting video info with yt-dlp:', error);
     
-    // Check for format-related errors and try without format checking
+    // If yt-dlp fails with format error, try yt-search again as last resort
     if (error.message && error.message.includes('Requested format is not available')) {
       try {
-        console.log('Retrying without format checks...');
-        const retryOptions = {
-          dumpSingleJson: true,
-          noWarnings: true,
-          noPlaylist: true,
-          skipDownload: true,
-          noCheckFormats: true
-        };
+        console.log('Format error detected, retrying with yt-search...');
+        const search = await yts({ videoId });
         
-        if (fs.existsSync(COOKIES_PATH)) {
-          const cookiesStats = fs.statSync(COOKIES_PATH);
-          if (cookiesStats.size > 0) {
-            retryOptions.cookies = COOKIES_PATH;
-          }
+        if (search && search.videos && search.videos.length > 0) {
+          const video = search.videos[0];
+          return {
+            title: video.title || 'YouTube Video',
+            duration: video.duration ? video.duration.seconds : 0,
+            thumbnail: video.thumbnail || null,
+            description: video.description || ''
+          };
         }
-        
-        const retryInfo = await ytdlp(url, retryOptions);
-        return {
-          title: retryInfo.title || 'YouTube Video',
-          duration: retryInfo.duration || 0,
-          thumbnail: retryInfo.thumbnail || null,
-          description: retryInfo.description || ''
-        };
-      } catch (retryError) {
-        console.error('Retry also failed:', retryError);
-        throw new Error(`Failed to get video info: ${retryError.message}`);
+      } catch (fallbackError) {
+        console.error('All methods failed:', fallbackError);
+        throw new Error(`Failed to get video info: ${error.message}`);
       }
     }
     
