@@ -39,9 +39,16 @@ if (!fs.existsSync(TEMP_DIR)) {
 
 // Check for cookies file
 if (fs.existsSync(COOKIES_PATH)) {
-  console.log('✅ Cookies file found - will be used for authentication');
+  const cookiesStats = fs.statSync(COOKIES_PATH);
+  const cookiesSize = cookiesStats.size;
+  if (cookiesSize > 0) {
+    console.log(`✅ Cookies file found (${cookiesSize} bytes) - will be used for authentication`);
+  } else {
+    console.log('⚠️  Cookies file is empty - some videos may not be accessible');
+  }
 } else {
   console.log('⚠️  No cookies.txt found - some videos may not be accessible');
+  console.log('💡 Tip: Export cookies from your browser and place them in the api/ folder');
 }
 
 /**
@@ -87,8 +94,12 @@ async function getVideoInfo(url) {
       ]
     };
 
+    // Only use cookies if file exists and is not empty
     if (fs.existsSync(COOKIES_PATH)) {
-      options.cookies = COOKIES_PATH;
+      const cookiesStats = fs.statSync(COOKIES_PATH);
+      if (cookiesStats.size > 0) {
+        options.cookies = COOKIES_PATH;
+      }
     }
 
     const info = await ytdlp(url, options);
@@ -100,6 +111,12 @@ async function getVideoInfo(url) {
     };
   } catch (error) {
     console.error('Error getting video info:', error);
+    
+    // Check for specific cookie-related errors
+    if (error.message && (error.message.includes('Sign in to confirm') || error.message.includes('authentication'))) {
+      throw new Error('YouTube authentication failed. Cookies may be expired or invalid. Please update cookies.txt with fresh cookies from your browser.');
+    }
+    
     throw new Error(`Failed to get video info: ${error.message}`);
   }
 }
@@ -158,14 +175,28 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
       ]
     };
 
+    // Only use cookies if file exists and is not empty
     if (fs.existsSync(COOKIES_PATH)) {
-      options.cookies = COOKIES_PATH;
+      const cookiesStats = fs.statSync(COOKIES_PATH);
+      if (cookiesStats.size > 0) {
+        options.cookies = COOKIES_PATH;
+      }
     }
 
     try {
       await ytdlp(url, options);
     } catch (downloadError) {
       console.error('Download error:', downloadError);
+      
+      // Check for cookie/authentication errors
+      if (downloadError.message && (downloadError.message.includes('Sign in to confirm') || downloadError.message.includes('authentication'))) {
+        return res.status(500).json({
+          status: false,
+          creator: API_NAME,
+          error: 'YouTube authentication failed. Cookies may be expired or invalid. Please update cookies.txt with fresh cookies from your browser.'
+        });
+      }
+      
       return res.status(500).json({
         status: false,
         creator: API_NAME,
@@ -277,14 +308,28 @@ app.get('/api/downloader/ytmp4', async (req, res) => {
       ]
     };
 
+    // Only use cookies if file exists and is not empty
     if (fs.existsSync(COOKIES_PATH)) {
-      options.cookies = COOKIES_PATH;
+      const cookiesStats = fs.statSync(COOKIES_PATH);
+      if (cookiesStats.size > 0) {
+        options.cookies = COOKIES_PATH;
+      }
     }
 
     try {
       await ytdlp(url, options);
     } catch (downloadError) {
       console.error('Download error:', downloadError);
+      
+      // Check for cookie/authentication errors
+      if (downloadError.message && (downloadError.message.includes('Sign in to confirm') || downloadError.message.includes('authentication'))) {
+        return res.status(500).json({
+          status: false,
+          creator: API_NAME,
+          error: 'YouTube authentication failed. Cookies may be expired or invalid. Please update cookies.txt with fresh cookies from your browser.'
+        });
+      }
+      
       return res.status(500).json({
         status: false,
         creator: API_NAME,
