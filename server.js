@@ -30,6 +30,8 @@ const TEMP_DIR = isVercel ? path.join('/tmp', 'temp') : path.join(__dirname, 'te
 const API_NAME = process.env.API_NAME || 'YouTube Download API';
 const CREATOR_NAME = process.env.CREATOR_NAME || API_NAME;
 const API_KEY = process.env.API_KEY || process.env.APIKEY || null;
+// Optional: use Cobalt to generate a remote tunnel download link (no server-side downloading)
+const COBALT_URL = (process.env.COBALT_URL || '').replace(/\/+$/, '');
 // Use Vercel's URL if available, otherwise use BASE_URL or localhost
 const BASE_URL = process.env.VERCEL_URL 
   ? `https://${process.env.VERCEL_URL}` 
@@ -72,6 +74,46 @@ function formatDurationTimestamp(totalSeconds) {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+async function requestCobaltDownload({ url, type, format, quality }) {
+  if (!COBALT_URL) return null;
+
+  // Cobalt instances commonly expose /api/json (cobalt.tools compatible)
+  // We keep the payload flexible and accept multiple response shapes.
+  const endpoint = `${COBALT_URL}/api/json`;
+  const body = {
+    url,
+    // audio settings
+    isAudioOnly: type === 'audio',
+    aFormat: format || (type === 'audio' ? 'mp3' : undefined),
+    // video settings (if needed later)
+    vCodec: 'h264',
+    vQuality: quality || '1080',
+    filenameStyle: 'classic'
+  };
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const msg = (data && (data.error || data.message)) ? (data.error || data.message) : `Cobalt error (${resp.status})`;
+    throw new Error(msg);
+  }
+
+  // Accept common shapes:
+  // - { status: 'stream', url: 'https://.../tunnel?...' }
+  // - { status: 'redirect', url: 'https://...' }
+  // - { url: 'https://...' }
+  // - { download_url: 'https://...' }
+  const downloadUrl = data?.url || data?.download_url || data?.result?.url || data?.result?.download_url;
+  if (!downloadUrl) return null;
+
+  return { raw: data, downloadUrl };
 }
 
 // Serve static files from public directory
@@ -537,81 +579,94 @@ app.get('/api/download/ytmp3', async (req, res) => {
     // Get info (title/thumb/duration)
     const videoInfo = await getVideoInfo(url);
 
-    // Generate unique filename
-    const timestamp = Date.now();
-    const filename = `audio_${timestamp}.mp3`;
-    const outputPath = path.join(DOWNLOAD_DIR, filename);
-
-    // Try yt-dlp first (same retry list as existing endpoint)
-    const formatOptions = [
-      'bestaudio[abr<=128]/bestaudio[abr<=128k]/bestaudio[ext=m4a][abr<=128]',
-      'bestaudio[ext=m4a][abr<=128]/bestaudio[ext=webm][abr<=128]',
-      'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-      'bestaudio/best',
-      'best[ext=m4a]/best',
-      'best'
-    ];
-
-    let downloadSuccess = false;
-    let lastError = null;
-    for (const formatOption of formatOptions) {
-      try {
-        const options = {
-          output: outputPath,
-          format: formatOption,
-          extractAudio: true,
-          audioFormat: 'mp3',
-          audioQuality: '0',
-          noPlaylist: true,
-          addHeader: [
-            'referer:youtube.com',
-            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          ]
-        };
-
-        if (fs.existsSync(COOKIES_PATH)) {
-          const cookiesStats = fs.statSync(COOKIES_PATH);
-          if (cookiesStats.size > 0) {
-            options.cookies = COOKIES_PATH;
-          }
-        }
-
-        await ytdlp(url, options);
-        downloadSuccess = true;
-        break;
-      } catch (err) {
-        lastError = err;
-      }
+    // Preferred: generate a remote tunnel URL via Cobalt (no server storage)
+    let downloadUrl = null;
+    try {
+      const cobalt = await requestCobaltDownload({ url, type: 'audio', format: 'mp3' });
+      if (cobalt?.downloadUrl) downloadUrl = cobalt.downloadUrl;
+    } catch (cobaltErr) {
+      console.log('Cobalt download failed, falling back to server-side download:', cobaltErr.message);
     }
 
-    // Fallback to ytdl-core if yt-dlp is blocked
-    if (!downloadSuccess) {
-      await downloadAudioWithYtdlCore(url, outputPath);
-      downloadSuccess = true;
-    }
+    // Fallback: server-side download (existing behavior) if Cobalt isn't configured/failed
+    if (!downloadUrl) {
+      // Generate unique filename
+      const timestamp = Date.now();
+      const filename = `audio_${timestamp}.mp3`;
+      const outputPath = path.join(DOWNLOAD_DIR, filename);
 
-    // Wait a moment for file system
-    await new Promise(resolve => setTimeout(resolve, 500));
+      // Try yt-dlp first (same retry list as existing endpoint)
+      const formatOptions = [
+        'bestaudio[abr<=128]/bestaudio[abr<=128k]/bestaudio[ext=m4a][abr<=128]',
+        'bestaudio[ext=m4a][abr<=128]/bestaudio[ext=webm][abr<=128]',
+        'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        'bestaudio/best',
+        'best[ext=m4a]/best',
+        'best'
+      ];
 
-    if (!fs.existsSync(outputPath)) {
-      return res.status(500).json({
-        status: 500,
-        success: false,
-        creator: CREATOR_NAME,
-        error: 'File not found after download'
-      });
-    }
-
-    // schedule deletion
-    setTimeout(() => {
-      if (fs.existsSync(outputPath)) {
+      let downloadSuccess = false;
+      let lastError = null;
+      for (const formatOption of formatOptions) {
         try {
-          fs.unlinkSync(outputPath);
-        } catch {}
-      }
-    }, FILE_CLEANUP_AGE);
+          const options = {
+            output: outputPath,
+            format: formatOption,
+            extractAudio: true,
+            audioFormat: 'mp3',
+            audioQuality: '0',
+            noPlaylist: true,
+            addHeader: [
+              'referer:youtube.com',
+              'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            ]
+          };
 
-    const downloadUrl = `${BASE_URL}/download/${filename}`;
+          if (fs.existsSync(COOKIES_PATH)) {
+            const cookiesStats = fs.statSync(COOKIES_PATH);
+            if (cookiesStats.size > 0) {
+              options.cookies = COOKIES_PATH;
+            }
+          }
+
+          await ytdlp(url, options);
+          downloadSuccess = true;
+          break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      // Fallback to ytdl-core if yt-dlp is blocked
+      if (!downloadSuccess) {
+        await downloadAudioWithYtdlCore(url, outputPath);
+        downloadSuccess = true;
+      }
+
+      // Wait a moment for file system
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      if (!fs.existsSync(outputPath)) {
+        return res.status(500).json({
+          status: 500,
+          success: false,
+          creator: CREATOR_NAME,
+          error: `File not found after download${lastError?.message ? `: ${lastError.message}` : ''}`
+        });
+      }
+
+      // schedule deletion
+      setTimeout(() => {
+        if (fs.existsSync(outputPath)) {
+          try {
+            fs.unlinkSync(outputPath);
+          } catch {}
+        }
+      }, FILE_CLEANUP_AGE);
+
+      downloadUrl = `${BASE_URL}/download/${filename}`;
+    }
+
     const durationTs = formatDurationTimestamp(videoInfo.duration);
 
     return res.json({
