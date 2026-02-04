@@ -42,6 +42,52 @@ if (!isVercel) {
   app.use('/downloads', express.static(DOWNLOAD_DIR));
 }
 
+/**
+ * Direct download endpoint for audio and video files
+ * Serves files with proper download headers
+ */
+app.get('/download/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(DOWNLOAD_DIR, filename);
+    
+    // Security: Only allow files from downloads directory
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        status: false,
+        creator: API_NAME,
+        error: 'File not found'
+      });
+    }
+    
+    // Set headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', filename.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4');
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+    fileStream.on('error', (err) => {
+      console.error('Error streaming file:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          status: false,
+          creator: API_NAME,
+          error: 'Error streaming file'
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Download endpoint error:', error);
+    res.status(500).json({
+      status: false,
+      creator: API_NAME,
+      error: error.message
+    });
+  }
+});
+
 // Ensure directories exist (safely handle for serverless)
 try {
   if (!fs.existsSync(DOWNLOAD_DIR)) {
@@ -118,16 +164,26 @@ async function getVideoInfo(url) {
 
   // PRIMARY: Use yt-search (no format issues, more reliable)
   try {
-    const search = await yts({ videoId });
+    // Try with videoId first
+    let search = await yts({ videoId });
+    
+    // If that doesn't work, try with full URL
+    if (!search || !search.videos || search.videos.length === 0) {
+      console.log('yt-search with videoId returned empty, trying with full URL...');
+      search = await yts(url);
+    }
     
     if (search && search.videos && search.videos.length > 0) {
       const video = search.videos[0];
+      console.log('✅ Successfully got video info with yt-search');
       return {
         title: video.title || 'YouTube Video',
         duration: video.duration ? video.duration.seconds : 0,
         thumbnail: video.thumbnail || null,
         description: video.description || ''
       };
+    } else {
+      console.log('yt-search returned empty results, trying yt-dlp fallback...');
     }
   } catch (ytsError) {
     console.log('yt-search failed, trying yt-dlp fallback...', ytsError.message);
@@ -135,11 +191,13 @@ async function getVideoInfo(url) {
 
   // FALLBACK: Use yt-dlp if yt-search fails (should rarely happen)
   try {
+    console.log('Attempting to get video info with yt-dlp...');
     const options = {
       dumpSingleJson: true,
       noWarnings: true,
       noPlaylist: true,
       skipDownload: true,
+      format: 'best',  // Prevent format errors when extracting metadata
       addHeader: [
         'referer:youtube.com',
         'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -156,6 +214,7 @@ async function getVideoInfo(url) {
 
     const info = await ytdlp(url, options);
     
+    console.log('✅ Successfully got video info with yt-dlp');
     return {
       title: info.title || 'YouTube Video',
       duration: info.duration || 0,
@@ -169,16 +228,24 @@ async function getVideoInfo(url) {
     if (error.message && error.message.includes('Requested format is not available')) {
       try {
         console.log('Format error detected, retrying with yt-search...');
-        const search = await yts({ videoId });
+        // Try both methods
+        let search = await yts({ videoId });
+        if (!search || !search.videos || search.videos.length === 0) {
+          console.log('yt-search with videoId failed in fallback, trying with full URL...');
+          search = await yts(url);
+        }
         
         if (search && search.videos && search.videos.length > 0) {
           const video = search.videos[0];
+          console.log('✅ Successfully got video info with yt-search fallback');
           return {
             title: video.title || 'YouTube Video',
             duration: video.duration ? video.duration.seconds : 0,
             thumbnail: video.thumbnail || null,
             description: video.description || ''
           };
+        } else {
+          console.error('yt-search fallback also returned empty results');
         }
       } catch (fallbackError) {
         console.error('All methods failed:', fallbackError);
@@ -294,8 +361,8 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
     const stats = fs.statSync(outputPath);
     const fileSize = stats.size;
 
-    // Construct download URL
-    const downloadUrl = `${BASE_URL}/downloads/${filename}`;
+    // Construct direct download URL
+    const downloadUrl = `${BASE_URL}/download/${filename}`;
 
     // Schedule file deletion after 30 seconds (enough time for download)
     setTimeout(() => {
@@ -309,15 +376,16 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
       }
     }, FILE_CLEANUP_AGE);
 
-    // Return Okatsu-style response
+    // Return response with direct downloadable MP3 link
     res.json({
       status: true,
       creator: API_NAME,
       title: videoInfo.title,
-      dl: downloadUrl,
+      dl: downloadUrl,  // Direct downloadable MP3 link
       thumb: videoInfo.thumbnail,
       duration: videoInfo.duration,
-      size: fileSize
+      size: fileSize,
+      format: 'mp3'
     });
 
   } catch (error) {
@@ -427,8 +495,8 @@ app.get('/api/downloader/ytmp4', async (req, res) => {
     const stats = fs.statSync(outputPath);
     const fileSize = stats.size;
 
-    // Construct download URL
-    const downloadUrl = `${BASE_URL}/downloads/${filename}`;
+    // Construct direct download URL
+    const downloadUrl = `${BASE_URL}/download/${filename}`;
 
     // Schedule file deletion after 30 seconds (enough time for download)
     setTimeout(() => {
@@ -442,15 +510,16 @@ app.get('/api/downloader/ytmp4', async (req, res) => {
       }
     }, FILE_CLEANUP_AGE);
 
-    // Return Okatsu-style response
+    // Return response with direct downloadable MP4 link
     res.json({
       status: true,
       creator: API_NAME,
       title: videoInfo.title,
-      dl: downloadUrl,
+      dl: downloadUrl,  // Direct downloadable MP4 link
       thumb: videoInfo.thumbnail,
       duration: videoInfo.duration,
-      size: fileSize
+      size: fileSize,
+      format: 'mp4'
     });
 
   } catch (error) {
