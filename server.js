@@ -15,6 +15,8 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const ytdlp = require('yt-dlp-exec');
 const yts = require('yt-search');
+const ytdl = require('@distube/ytdl-core');
+const ffmpeg = require('fluent-ffmpeg');
 
 const execAsync = promisify(exec);
 const app = express();
@@ -151,6 +153,41 @@ function cleanupOldFiles() {
 // Run cleanup every 2 minutes to remove old files quickly (only in non-serverless)
 if (!isVercel) {
   setInterval(cleanupOldFiles, 2 * 60 * 1000);
+}
+
+/**
+ * Download audio using ytdl-core (pytubefix method)
+ * Fallback when yt-dlp fails - works directly with YouTube API
+ */
+async function downloadAudioWithYtdlCore(url, outputPath) {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('Using ytdl-core (pytubefix method) to download audio...');
+      
+      // Get audio stream from YouTube (similar to pytubefix)
+      const audioStream = ytdl(url, {
+        quality: 'highestaudio',
+        filter: 'audioonly'
+      });
+
+      // Pipe to file and convert to MP3 using ffmpeg
+      ffmpeg(audioStream)
+        .audioBitrate(128)
+        .audioCodec('libmp3lame')
+        .format('mp3')
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(new Error(`Audio conversion failed: ${err.message}`));
+        })
+        .on('end', () => {
+          console.log('✅ Audio conversion completed with ytdl-core');
+          resolve();
+        })
+        .save(outputPath);
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 /**
@@ -355,23 +392,30 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
     }
 
     if (!downloadSuccess) {
-      // All formats failed
-      console.error('All format options failed:', lastError);
-      
-      // Check for cookie/authentication errors
-      if (lastError.message && (lastError.message.includes('Sign in to confirm') || lastError.message.includes('authentication'))) {
+      // All yt-dlp formats failed, try ytdl-core fallback (similar to pytubefix)
+      console.log('yt-dlp failed, trying ytdl-core fallback (pytubefix method)...');
+      try {
+        await downloadAudioWithYtdlCore(url, outputPath);
+        downloadSuccess = true;
+        console.log('✅ Download successful with ytdl-core fallback');
+      } catch (ytdlError) {
+        console.error('ytdl-core fallback also failed:', ytdlError);
+        
+        // Check for cookie/authentication errors
+        if (lastError.message && (lastError.message.includes('Sign in to confirm') || lastError.message.includes('authentication'))) {
+          return res.status(500).json({
+            status: false,
+            creator: API_NAME,
+            error: 'YouTube authentication failed. Cookies may be expired or invalid. Please update cookies.txt with fresh cookies from your browser.'
+          });
+        }
+        
         return res.status(500).json({
           status: false,
           creator: API_NAME,
-          error: 'YouTube authentication failed. Cookies may be expired or invalid. Please update cookies.txt with fresh cookies from your browser.'
+          error: `Download failed: ${ytdlError.message || lastError.message}`
         });
       }
-      
-      return res.status(500).json({
-        status: false,
-        creator: API_NAME,
-        error: `Download failed: ${lastError.message}`
-      });
     }
 
     // Wait a moment for file system
