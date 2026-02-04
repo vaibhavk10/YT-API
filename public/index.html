@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Download API - Video & Audio Downloader</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎵 YouTube Download API</h1>
+            <p class="subtitle">Download high-quality videos and audio from YouTube</p>
+        </header>
+
+        <div class="search-section">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search for a song or video..." autocomplete="off">
+                <button id="searchBtn" class="btn btn-primary">Search</button>
+            </div>
+            <div class="url-box">
+                <input type="text" id="urlInput" placeholder="Or paste YouTube URL here..." autocomplete="off">
+                <button id="fetchBtn" class="btn btn-secondary">Fetch Info</button>
+            </div>
+        </div>
+
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Loading...</p>
+        </div>
+
+        <div id="error" class="error hidden"></div>
+
+        <div id="results" class="results hidden">
+            <h2>Search Results</h2>
+            <div id="resultsList" class="results-list"></div>
+        </div>
+
+        <div id="videoInfo" class="video-info hidden">
+            <div class="video-card">
+                <img id="videoThumbnail" src="" alt="Video thumbnail" class="thumbnail">
+                <div class="video-details">
+                    <h3 id="videoTitle"></h3>
+                    <p id="videoDuration" class="meta"></p>
+                    <div class="actions">
+                        <button id="downloadAudioBtn" class="btn btn-success">Download MP3</button>
+                        <button id="downloadVideoBtn" class="btn btn-success">Download MP4</button>
+                        <button id="testEndpointBtn" class="btn btn-info">Test Endpoint</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="testResult" class="test-result hidden">
+            <h3>API Test Result</h3>
+            <div id="testStatus" class="status"></div>
+            <pre id="testResponse" class="response"></pre>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+

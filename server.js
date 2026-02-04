@@ -37,6 +37,9 @@ const COOKIES_PATH = isVercel ? path.join('/tmp', 'cookies.txt') : path.join(__d
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
 // Only serve static files if not in Vercel (Vercel handles static files differently)
 if (!isVercel) {
   app.use('/downloads', express.static(DOWNLOAD_DIR));
@@ -559,6 +562,68 @@ app.get('/api/downloader/ytmp4', async (req, res) => {
 });
 
 /**
+ * Search YouTube videos by name/query
+ */
+app.get('/api/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q) {
+      return res.status(400).json({
+        status: false,
+        creator: API_NAME,
+        error: 'Query parameter "q" is required'
+      });
+    }
+
+    // Search YouTube using yt-search
+    const searchResults = await yts(q);
+    
+    if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
+      return res.json({
+        status: true,
+        creator: API_NAME,
+        query: q,
+        results: [],
+        message: 'No videos found'
+      });
+    }
+
+    // Format results
+    const videos = searchResults.videos.slice(0, 20).map(video => ({
+      videoId: video.videoId,
+      title: video.title,
+      url: video.url,
+      thumbnail: video.thumbnail,
+      duration: video.duration ? {
+        seconds: video.duration.seconds,
+        timestamp: video.duration.timestamp
+      } : null,
+      views: video.views,
+      author: video.author ? {
+        name: video.author.name,
+        url: video.author.url
+      } : null
+    }));
+
+    res.json({
+      status: true,
+      creator: API_NAME,
+      query: q,
+      results: videos,
+      count: videos.length
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({
+      status: false,
+      creator: API_NAME,
+      error: error.message || 'Search failed'
+    });
+  }
+});
+
+/**
  * Health check endpoint
  */
 app.get('/health', (req, res) => {
@@ -570,19 +635,25 @@ app.get('/health', (req, res) => {
 });
 
 /**
- * Root endpoint
+ * Root endpoint - serve the web UI
  */
 app.get('/', (req, res) => {
-  res.json({
-    status: true,
-    creator: API_NAME,
-    message: 'YouTube Download API',
-    endpoints: {
-      audio: '/api/downloader/ytmp3?url=https://youtu.be/LZY0-ccz2-w?si=_hGGb5SmMwLL8UHbL',
-      video: '/api/downloader/ytmp4?url=YOUTUBE_URL',
-      health: '/health'
-    }
-  });
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.json({
+      status: true,
+      creator: API_NAME,
+      message: 'YouTube Download API',
+      endpoints: {
+        search: '/api/search?q=query',
+        audio: '/api/downloader/ytmp3?url=YOUTUBE_URL',
+        video: '/api/downloader/ytmp4?url=YOUTUBE_URL',
+        health: '/health'
+      }
+    });
+  }
 });
 
 // Export app for Vercel serverless functions
