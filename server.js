@@ -303,34 +303,57 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
     const filename = `audio_${timestamp}.mp3`;
     const outputPath = path.join(DOWNLOAD_DIR, filename);
 
-    // Download audio using yt-dlp
-    const options = {
-      output: outputPath,
-      format: 'bestaudio/best',
-      extractAudio: true,
-      audioFormat: 'mp3',
-      noPlaylist: true,
-      addHeader: [
-        'referer:youtube.com',
-        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      ]
-    };
+    // Download audio using yt-dlp with retry logic for different formats
+    const formatOptions = [
+      'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+      'bestaudio/best',
+      'best[ext=m4a]/best',
+      'best'
+    ];
 
-    // Only use cookies if file exists and is not empty
-    if (fs.existsSync(COOKIES_PATH)) {
-      const cookiesStats = fs.statSync(COOKIES_PATH);
-      if (cookiesStats.size > 0) {
-        options.cookies = COOKIES_PATH;
+    let downloadSuccess = false;
+    let lastError = null;
+
+    for (const formatOption of formatOptions) {
+      try {
+        console.log(`Attempting download with format: ${formatOption}`);
+        const options = {
+          output: outputPath,
+          format: formatOption,
+          extractAudio: true,
+          audioFormat: 'mp3',
+          noPlaylist: true,
+          addHeader: [
+            'referer:youtube.com',
+            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          ]
+        };
+
+        // Only use cookies if file exists and is not empty
+        if (fs.existsSync(COOKIES_PATH)) {
+          const cookiesStats = fs.statSync(COOKIES_PATH);
+          if (cookiesStats.size > 0) {
+            options.cookies = COOKIES_PATH;
+          }
+        }
+
+        await ytdlp(url, options);
+        downloadSuccess = true;
+        console.log(`✅ Download successful with format: ${formatOption}`);
+        break; // Success, exit loop
+      } catch (formatError) {
+        console.log(`Format "${formatOption}" failed, trying next...`);
+        lastError = formatError;
+        // Continue to next format
       }
     }
 
-    try {
-      await ytdlp(url, options);
-    } catch (downloadError) {
-      console.error('Download error:', downloadError);
+    if (!downloadSuccess) {
+      // All formats failed
+      console.error('All format options failed:', lastError);
       
       // Check for cookie/authentication errors
-      if (downloadError.message && (downloadError.message.includes('Sign in to confirm') || downloadError.message.includes('authentication'))) {
+      if (lastError.message && (lastError.message.includes('Sign in to confirm') || lastError.message.includes('authentication'))) {
         return res.status(500).json({
           status: false,
           creator: API_NAME,
@@ -341,7 +364,7 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
       return res.status(500).json({
         status: false,
         creator: API_NAME,
-        error: `Download failed: ${downloadError.message}`
+        error: `Download failed: ${lastError.message}`
       });
     }
 
