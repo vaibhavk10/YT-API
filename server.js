@@ -28,6 +28,8 @@ const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV;
 const DOWNLOAD_DIR = isVercel ? path.join('/tmp', 'downloads') : path.join(__dirname, 'downloads');
 const TEMP_DIR = isVercel ? path.join('/tmp', 'temp') : path.join(__dirname, 'temp');
 const API_NAME = process.env.API_NAME || 'YouTube Download API';
+const CREATOR_NAME = process.env.CREATOR_NAME || API_NAME;
+const API_KEY = process.env.API_KEY || process.env.APIKEY || null;
 // Use Vercel's URL if available, otherwise use BASE_URL or localhost
 const BASE_URL = process.env.VERCEL_URL 
   ? `https://${process.env.VERCEL_URL}` 
@@ -38,6 +40,39 @@ const COOKIES_PATH = isVercel ? path.join('/tmp', 'cookies.txt') : path.join(__d
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+/**
+ * Simple API key guard (query param: apikey)
+ */
+function requireApiKey(req, res) {
+  // If no API_KEY is configured, allow all (backwards-compatible)
+  if (!API_KEY) return true;
+
+  const apikey = req.query.apikey;
+  if (!apikey || apikey !== API_KEY) {
+    res.status(401).json({
+      status: 401,
+      success: false,
+      creator: CREATOR_NAME,
+      error: 'Invalid API key'
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function formatDurationTimestamp(totalSeconds) {
+  const s = Number(totalSeconds) || 0;
+  const hours = Math.floor(s / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  const seconds = Math.floor(s % 60);
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
 
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
@@ -172,7 +207,7 @@ async function downloadAudioWithYtdlCore(url, outputPath) {
 
       // Pipe to file and convert to MP3 using ffmpeg
       ffmpeg(audioStream)
-        .audioBitrate(128)
+        .audioBitrate(320)
         .audioCodec('libmp3lame')
         .format('mp3')
         .on('error', (err) => {
@@ -365,6 +400,7 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
           format: formatOption,
           extractAudio: true,
           audioFormat: 'mp3',
+          audioQuality: '0',
           noPlaylist: true,
           addHeader: [
             'referer:youtube.com',
@@ -466,6 +502,136 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
     res.status(500).json({
       status: false,
       creator: API_NAME,
+      error: error.message || 'Internal server error'
+    });
+  }
+});
+
+/**
+ * PrinceTech-style endpoint (apikey + nested result + download_url)
+ * GET /api/download/ytmp3?apikey=xxx&url=YOUTUBE_URL
+ */
+app.get('/api/download/ytmp3', async (req, res) => {
+  try {
+    if (!requireApiKey(req, res)) return;
+
+    const { url } = req.query;
+    if (!url) {
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        creator: CREATOR_NAME,
+        error: 'URL parameter is required'
+      });
+    }
+
+    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        creator: CREATOR_NAME,
+        error: 'Invalid YouTube URL'
+      });
+    }
+
+    // Get info (title/thumb/duration)
+    const videoInfo = await getVideoInfo(url);
+
+    // Generate unique filename
+    const timestamp = Date.now();
+    const filename = `audio_${timestamp}.mp3`;
+    const outputPath = path.join(DOWNLOAD_DIR, filename);
+
+    // Try yt-dlp first (same retry list as existing endpoint)
+    const formatOptions = [
+      'bestaudio[abr<=128]/bestaudio[abr<=128k]/bestaudio[ext=m4a][abr<=128]',
+      'bestaudio[ext=m4a][abr<=128]/bestaudio[ext=webm][abr<=128]',
+      'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+      'bestaudio/best',
+      'best[ext=m4a]/best',
+      'best'
+    ];
+
+    let downloadSuccess = false;
+    let lastError = null;
+    for (const formatOption of formatOptions) {
+      try {
+        const options = {
+          output: outputPath,
+          format: formatOption,
+          extractAudio: true,
+          audioFormat: 'mp3',
+          audioQuality: '0',
+          noPlaylist: true,
+          addHeader: [
+            'referer:youtube.com',
+            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          ]
+        };
+
+        if (fs.existsSync(COOKIES_PATH)) {
+          const cookiesStats = fs.statSync(COOKIES_PATH);
+          if (cookiesStats.size > 0) {
+            options.cookies = COOKIES_PATH;
+          }
+        }
+
+        await ytdlp(url, options);
+        downloadSuccess = true;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    // Fallback to ytdl-core if yt-dlp is blocked
+    if (!downloadSuccess) {
+      await downloadAudioWithYtdlCore(url, outputPath);
+      downloadSuccess = true;
+    }
+
+    // Wait a moment for file system
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (!fs.existsSync(outputPath)) {
+      return res.status(500).json({
+        status: 500,
+        success: false,
+        creator: CREATOR_NAME,
+        error: 'File not found after download'
+      });
+    }
+
+    // schedule deletion
+    setTimeout(() => {
+      if (fs.existsSync(outputPath)) {
+        try {
+          fs.unlinkSync(outputPath);
+        } catch {}
+      }
+    }, FILE_CLEANUP_AGE);
+
+    const downloadUrl = `${BASE_URL}/download/${filename}`;
+    const durationTs = formatDurationTimestamp(videoInfo.duration);
+
+    return res.json({
+      status: 200,
+      success: true,
+      creator: CREATOR_NAME,
+      result: {
+        quality: '320kbps',
+        duration: durationTs,
+        title: videoInfo.title,
+        thumbnail: videoInfo.thumbnail,
+        download_url: downloadUrl
+      }
+    });
+  } catch (error) {
+    console.error('PrinceTech ytmp3 error:', error);
+    return res.status(500).json({
+      status: 500,
+      success: false,
+      creator: CREATOR_NAME,
       error: error.message || 'Internal server error'
     });
   }
