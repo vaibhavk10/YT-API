@@ -18,8 +18,9 @@ const app = express();
 
 // Configuration
 const PORT = process.env.PORT || 3001; // Changed default to 3001 to avoid conflict
-const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
-const TEMP_DIR = path.join(__dirname, 'temp');
+// Use /tmp for Vercel serverless, otherwise use local downloads directory
+const DOWNLOAD_DIR = process.env.VERCEL ? path.join('/tmp', 'downloads') : path.join(__dirname, 'downloads');
+const TEMP_DIR = process.env.VERCEL ? path.join('/tmp', 'temp') : path.join(__dirname, 'temp');
 const API_NAME = process.env.API_NAME || 'YouTube Download API';
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const FILE_CLEANUP_AGE = 30000; // 30 seconds in milliseconds (files deleted after 30 sec)
@@ -466,41 +467,47 @@ app.get('/', (req, res) => {
   });
 });
 
-// Start server with error handling
-const server = app.listen(PORT, () => {
-  console.log(`🚀 ${API_NAME} running on port ${PORT}`);
-  console.log(`📡 Base URL: ${BASE_URL}`);
-  console.log(`📁 Downloads directory: ${DOWNLOAD_DIR}`);
-  console.log(`\nEndpoints:`);
-  console.log(`  Audio: GET ${BASE_URL}/api/downloader/ytmp3?url=https://youtu.be/LZY0-ccz2-w?si=_hGGb5SmMwLL8UHb`);
-  console.log(`  Video: GET ${BASE_URL}/api/downloader/ytmp4?url=YOUTUBE_URL`);
-  console.log(`  Health: GET ${BASE_URL}/health\n`);
-});
+// Export app for Vercel serverless functions
+module.exports = app;
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${PORT} is already in use.`);
-    console.log(`💡 Try one of these solutions:`);
-    console.log(`   1. Stop the process using port ${PORT}`);
-    console.log(`   2. Change PORT in .env file to a different port (e.g., 3001)`);
-    console.log(`   3. Find and kill the process: netstat -ano | findstr :${PORT}`);
-    process.exit(1);
-  } else {
-    console.error('Server error:', err);
-    process.exit(1);
-  }
-});
+// Only start server if not in Vercel environment
+if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+  // Start server with error handling
+  const server = app.listen(PORT, () => {
+    console.log(`🚀 ${API_NAME} running on port ${PORT}`);
+    console.log(`📡 Base URL: ${BASE_URL}`);
+    console.log(`📁 Downloads directory: ${DOWNLOAD_DIR}`);
+    console.log(`\nEndpoints:`);
+    console.log(`  Audio: GET ${BASE_URL}/api/downloader/ytmp3?url=https://youtu.be/LZY0-ccz2-w?si=_hGGb5SmMwLL8UHb`);
+    console.log(`  Video: GET ${BASE_URL}/api/downloader/ytmp4?url=YOUTUBE_URL`);
+    console.log(`  Health: GET ${BASE_URL}/health\n`);
+  });
 
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  cleanupOldFiles();
-  process.exit(0);
-});
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use.`);
+      console.log(`💡 Try one of these solutions:`);
+      console.log(`   1. Stop the process using port ${PORT}`);
+      console.log(`   2. Change PORT in .env file to a different port (e.g., 3001)`);
+      console.log(`   3. Find and kill the process: netstat -ano | findstr :${PORT}`);
+      process.exit(1);
+    } else {
+      console.error('Server error:', err);
+      process.exit(1);
+    }
+  });
 
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully...');
-  cleanupOldFiles();
-  process.exit(0);
-});
+  // Handle graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully...');
+    cleanupOldFiles();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down gracefully...');
+    cleanupOldFiles();
+    process.exit(0);
+  });
+}
 
