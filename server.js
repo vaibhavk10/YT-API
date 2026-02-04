@@ -3,7 +3,10 @@
  * Uses yt-dlp to download YouTube videos and audio
  */
 
-require('dotenv').config();
+// Only load dotenv if not in Vercel (Vercel uses environment variables directly)
+if (!process.env.VERCEL && !process.env.VERCEL_ENV) {
+  require('dotenv').config();
+}
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -19,38 +22,56 @@ const app = express();
 // Configuration
 const PORT = process.env.PORT || 3001; // Changed default to 3001 to avoid conflict
 // Use /tmp for Vercel serverless, otherwise use local downloads directory
-const DOWNLOAD_DIR = process.env.VERCEL ? path.join('/tmp', 'downloads') : path.join(__dirname, 'downloads');
-const TEMP_DIR = process.env.VERCEL ? path.join('/tmp', 'temp') : path.join(__dirname, 'temp');
+const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV;
+const DOWNLOAD_DIR = isVercel ? path.join('/tmp', 'downloads') : path.join(__dirname, 'downloads');
+const TEMP_DIR = isVercel ? path.join('/tmp', 'temp') : path.join(__dirname, 'temp');
 const API_NAME = process.env.API_NAME || 'YouTube Download API';
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+// Use Vercel's URL if available, otherwise use BASE_URL or localhost
+const BASE_URL = process.env.VERCEL_URL 
+  ? `https://${process.env.VERCEL_URL}` 
+  : (process.env.BASE_URL || `http://localhost:${PORT}`);
 const FILE_CLEANUP_AGE = 30000; // 30 seconds in milliseconds (files deleted after 30 sec)
-const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const COOKIES_PATH = isVercel ? path.join('/tmp', 'cookies.txt') : path.join(__dirname, 'cookies.txt');
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use('/downloads', express.static(DOWNLOAD_DIR));
 
-// Ensure directories exist
-if (!fs.existsSync(DOWNLOAD_DIR)) {
-  fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
-}
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+// Only serve static files if not in Vercel (Vercel handles static files differently)
+if (!isVercel) {
+  app.use('/downloads', express.static(DOWNLOAD_DIR));
 }
 
-// Check for cookies file
-if (fs.existsSync(COOKIES_PATH)) {
-  const cookiesStats = fs.statSync(COOKIES_PATH);
-  const cookiesSize = cookiesStats.size;
-  if (cookiesSize > 0) {
-    console.log(`✅ Cookies file found (${cookiesSize} bytes) - will be used for authentication`);
-  } else {
-    console.log('⚠️  Cookies file is empty - some videos may not be accessible');
+// Ensure directories exist (safely handle for serverless)
+try {
+  if (!fs.existsSync(DOWNLOAD_DIR)) {
+    fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
   }
-} else {
-  console.log('⚠️  No cookies.txt found - some videos may not be accessible');
-  console.log('💡 Tip: Export cookies from your browser and place them in the api/ folder');
+  if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+  }
+} catch (err) {
+  console.error('Error creating directories:', err.message);
+}
+
+// Check for cookies file (safely handle for serverless)
+try {
+  if (fs.existsSync(COOKIES_PATH)) {
+    const cookiesStats = fs.statSync(COOKIES_PATH);
+    const cookiesSize = cookiesStats.size;
+    if (cookiesSize > 0) {
+      console.log(`✅ Cookies file found (${cookiesSize} bytes) - will be used for authentication`);
+    } else {
+      console.log('⚠️  Cookies file is empty - some videos may not be accessible');
+    }
+  } else {
+    if (!isVercel) {
+      console.log('⚠️  No cookies.txt found - some videos may not be accessible');
+      console.log('💡 Tip: Export cookies from your browser and place them in the api/ folder');
+    }
+  }
+} catch (err) {
+  console.log('⚠️  Could not check cookies file:', err.message);
 }
 
 /**
@@ -78,8 +99,10 @@ function cleanupOldFiles() {
   }
 }
 
-// Run cleanup every 2 minutes to remove old files quickly
-setInterval(cleanupOldFiles, 2 * 60 * 1000);
+// Run cleanup every 2 minutes to remove old files quickly (only in non-serverless)
+if (!isVercel) {
+  setInterval(cleanupOldFiles, 2 * 60 * 1000);
+}
 
 /**
  * Get video info using yt-search (primary) with yt-dlp fallback
@@ -471,7 +494,7 @@ app.get('/', (req, res) => {
 module.exports = app;
 
 // Only start server if not in Vercel environment
-if (process.env.VERCEL !== '1' && !process.env.VERCEL_ENV) {
+if (!isVercel) {
   // Start server with error handling
   const server = app.listen(PORT, () => {
     console.log(`🚀 ${API_NAME} running on port ${PORT}`);
