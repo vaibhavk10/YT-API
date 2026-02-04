@@ -304,7 +304,10 @@ app.get('/api/downloader/ytmp3', async (req, res) => {
     const outputPath = path.join(DOWNLOAD_DIR, filename);
 
     // Download audio using yt-dlp with retry logic for different formats
+    // Prioritize 128k audio formats
     const formatOptions = [
+      'bestaudio[abr<=128]/bestaudio[abr<=128k]/bestaudio[ext=m4a][abr<=128]',
+      'bestaudio[ext=m4a][abr<=128]/bestaudio[ext=webm][abr<=128]',
       'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
       'bestaudio/best',
       'best[ext=m4a]/best',
